@@ -2,7 +2,7 @@
 import { DashboardStats, Lead } from '@/types';
 import { logger } from '@/lib/logger';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://dmhcacrm.com/api/v1';
+const API_BASE_URL = 'https://dmhcacrm.com/api/v1';
 
 class ApiService {
   private getAuthHeaders() {
