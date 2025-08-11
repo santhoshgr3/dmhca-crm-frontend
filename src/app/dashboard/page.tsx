@@ -32,9 +32,9 @@ import {
 // API service functions - Updated to use imported service
 const fetchDashboardData = async (userRole: string, branchId?: string) => {
   const [dashboardStats, followUps, recommendations] = await Promise.all([
-    dashboardApi.fetchDashboardStats(branchId !== 'all' ? branchId : undefined),
-    dashboardApi.fetchTodaysFollowUps(),
-    dashboardApi.fetchAIRecommendations(),
+    dashboardApi.getDashboardStats(),
+    dashboardApi.getTodaysFollowUps(),
+    dashboardApi.getAIRecommendations(),
   ]);
 
   return { dashboardStats, followUps, recommendations };
@@ -103,7 +103,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!user) return;
     
-    const refreshInterval = getDashboardRefreshInterval(user.role);
+    const refreshInterval = getDashboardRefreshInterval();
     const interval = setInterval(() => {
       if (!loading) {
         fetchData();
