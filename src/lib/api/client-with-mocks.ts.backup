@@ -1,0 +1,1131 @@
+// Comprehensive API service for DMHCA CRM
+import { Lead, User, DashboardStats, Course, Branch } from '@/types';
+import { 
+  validateResponse, 
+  withTimeout, 
+  withRetry, 
+  handleApiError, 
+  API_CONFIG,
+  ApiClientError 
+} from './utils';
+
+const API_BASE_URL = API_CONFIG.BASE_URL;
+
+class ApiClient {
+  private getAuthHeaders(): HeadersInit {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    return {
+      'Authorization': token ? `Bearer ${token}` : '',
+      'Content-Type': 'application/json',
+    };
+  }
+
+  private async handleResponse<T>(response: Response): Promise<T> {
+    try {
+      return await validateResponse<T>(response);
+    } catch (error) {
+      if (error instanceof ApiClientError && error.status === 401) {
+        // Token expired or invalid - redirect to login
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('token');
+          localStorage.removeItem('refreshToken');
+          window.location.href = '/login';
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async makeRequest<T>(
+    url: string, 
+    options: RequestInit = {}
+  ): Promise<T> {
+    const requestOptions: RequestInit = {
+      ...options,
+      headers: {
+        ...this.getAuthHeaders(),
+        ...options.headers,
+      },
+    };
+
+    return withRetry(async () => {
+      const response = await withTimeout(
+        fetch(url, requestOptions),
+        API_CONFIG.TIMEOUT
+      );
+      return this.handleResponse<T>(response);
+    });
+  }
+
+  // Authentication APIs
+  async login(email: string, password: string): Promise<{ user: User; token: string; refreshToken: string }> {
+    try {
+      // Try real backend API first
+      const data = await this.makeRequest<{ user: User; token: string; refreshToken: string }>(
+        `${API_BASE_URL}/auth/login`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ email, password }),
+        }
+      );
+
+      // Store tokens
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('refreshToken', data.refreshToken);
+      }
+      
+      return data;
+    } catch (error) {
+      console.warn('Backend authentication not available, using mock auth:', error);
+
+      // Fallback to mock authentication for development
+      const mockUsers: User[] = [
+        {
+          id: '1',
+          username: 'admin',
+          name: 'Admin Manager',
+          email: 'admin@dmhca.edu',
+          role: 'manager',
+          branch: 'delhi',
+          isActive: true,
+          permissions: [],
+          createdAt: new Date('2024-01-01'),
+          lastLogin: new Date(),
+          createdBy: '1',
+        },
+        {
+          id: '2',
+          username: 'john_lead',
+          name: 'John Smith',
+          email: 'john.smith@dmhca.edu',
+          role: 'team_lead',
+          branch: 'delhi',
+          isActive: true,
+          permissions: [],
+          teamMembers: ['3', '4'],
+          createdAt: new Date('2024-02-15'),
+          lastLogin: new Date(),
+          createdBy: '1',
+        },
+        {
+          id: '3',
+          username: 'sarah_counselor',
+          name: 'Sarah Wilson',
+          email: 'sarah.wilson@dmhca.edu',
+          role: 'counselor',
+          branch: 'delhi',
+          teamLeadId: '2',
+          isActive: true,
+          permissions: [],
+          createdAt: new Date('2024-03-10'),
+          lastLogin: new Date(),
+          createdBy: '1',
+        }
+      ];
+
+      // Check if user exists with this email
+      const user = mockUsers.find(u => u.email === email || u.username === email);
+      
+      if (!user) {
+        console.error('Login attempt failed - User not found:', { email, availableUsers: mockUsers.map(u => ({ email: u.email, username: u.username })) });
+        throw new ApiClientError('Invalid credentials - user not found', 401);
+      }
+
+      // Check password (for demo purposes, accept "password123" for all users)
+      if (password !== 'password123') {
+        console.error('Login attempt failed - Invalid password:', { email, password: password.substring(0, 3) + '***', expectedPassword: 'password123' });
+        throw new ApiClientError('Invalid credentials - wrong password', 401);
+      }
+
+      // Mock tokens
+      const token = 'mock-jwt-token-' + user.id;
+      const refreshToken = 'mock-refresh-token-' + user.id;
+      
+      // Store tokens
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('token', token);
+        localStorage.setItem('refreshToken', refreshToken);
+      }
+      
+      return { user, token, refreshToken };
+    }
+  }
+
+  async logout(): Promise<void> {
+    try {
+      // Try real backend logout
+      await this.makeRequest<void>(`${API_BASE_URL}/auth/logout`, {
+        method: 'POST',
+      });
+    } catch (error) {
+      console.warn('Backend logout not available, using mock logout:', error);
+    }
+
+    // Always clear local storage
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('token');
+      localStorage.removeItem('refreshToken');
+    }
+  }
+
+  async refreshToken(): Promise<string> {
+    try {
+      // Try real backend refresh
+      const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
+      const data = await this.makeRequest<{ token: string }>(`${API_BASE_URL}/auth/refresh`, {
+        method: 'POST',
+        body: JSON.stringify({ refreshToken }),
+      });
+
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('token', data.token);
+      }
+      
+      return data.token;
+    } catch (error) {
+      console.warn('Backend token refresh not available, using mock refresh:', error);
+
+      // Mock refresh token - return existing token or generate new one
+      const mockToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwibmFtZSI6IkFkbWluIFVzZXIiLCJpYXQiOjE1MTYyMzkwMjJ9.mock_token_signature';
+      
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('token', mockToken);
+      }
+      
+      return mockToken;
+    }
+  }
+
+  // User APIs
+  async getCurrentUser(): Promise<User> {
+    // Mock current user for development
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    
+    // For development: If no token, auto-login as admin
+    if (!token || !token.startsWith('mock-jwt-token-')) {
+      // Return default admin user for development
+      const defaultAdmin: User = {
+        id: '1',
+        username: 'admin',
+        name: 'Admin Manager',
+        email: 'admin@dmhca.edu',
+        role: 'manager',
+        branch: 'delhi',
+        isActive: true,
+        permissions: [
+          { resource: 'leads', actions: ['create', 'read', 'update', 'delete', 'manage'], scope: 'all' },
+          { resource: 'analytics', actions: ['read'], scope: 'all' },
+          { resource: 'sales', actions: ['read', 'manage'], scope: 'all' },
+          { resource: 'communications', actions: ['create', 'read', 'update', 'delete'], scope: 'all' },
+          { resource: 'users', actions: ['create', 'read', 'update', 'delete', 'manage'], scope: 'all' },
+          { resource: 'settings', actions: ['read', 'update', 'manage'], scope: 'all' },
+          { resource: 'hospitals', actions: ['read', 'update'], scope: 'all' },
+          { resource: 'courses', actions: ['read', 'update'], scope: 'all' },
+        ],
+        createdAt: new Date('2024-01-01'),
+        lastLogin: new Date(),
+        createdBy: '1',
+      };
+      
+      // Auto-set token for the default admin
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('token', 'mock-jwt-token-1');
+        localStorage.setItem('refreshToken', 'mock-refresh-token-1');
+      }
+      
+      return defaultAdmin;
+    }
+    
+    const userId = token.replace('mock-jwt-token-', '');
+    
+    const mockUsers: User[] = [
+      {
+        id: '1',
+        username: 'admin',
+        name: 'Admin Manager',
+        email: 'admin@dmhca.edu',
+        role: 'manager',
+        branch: 'delhi',
+        isActive: true,
+        permissions: [
+          { resource: 'leads', actions: ['create', 'read', 'update', 'delete', 'manage'], scope: 'all' },
+          { resource: 'analytics', actions: ['read'], scope: 'all' },
+          { resource: 'sales', actions: ['read', 'manage'], scope: 'all' },
+          { resource: 'communications', actions: ['create', 'read', 'update', 'delete'], scope: 'all' },
+          { resource: 'users', actions: ['create', 'read', 'update', 'delete', 'manage'], scope: 'all' },
+          { resource: 'settings', actions: ['read', 'update', 'manage'], scope: 'all' },
+          { resource: 'hospitals', actions: ['read', 'update'], scope: 'all' },
+          { resource: 'courses', actions: ['read', 'update'], scope: 'all' },
+        ],
+        createdAt: new Date('2024-01-01'),
+        lastLogin: new Date(),
+        createdBy: '1',
+      },
+      {
+        id: '2',
+        username: 'john_lead',
+        name: 'John Smith',
+        email: 'john.smith@dmhca.edu',
+        role: 'team_lead',
+        branch: 'delhi',
+        isActive: true,
+        permissions: [
+          { resource: 'leads', actions: ['create', 'read', 'update', 'delete'], scope: 'team' },
+          { resource: 'analytics', actions: ['read'], scope: 'team' },
+          { resource: 'sales', actions: ['read'], scope: 'team' },
+          { resource: 'communications', actions: ['create', 'read', 'update'], scope: 'team' },
+          { resource: 'users', actions: ['read'], scope: 'team' },
+          { resource: 'settings', actions: ['read'], scope: 'own' },
+          { resource: 'hospitals', actions: ['read'], scope: 'all' },
+          { resource: 'courses', actions: ['read'], scope: 'all' },
+        ],
+        teamMembers: ['3', '4'],
+        createdAt: new Date('2024-02-15'),
+        lastLogin: new Date(),
+        createdBy: '1',
+      },
+      {
+        id: '3',
+        username: 'sarah_counselor',
+        name: 'Sarah Wilson',
+        email: 'sarah.wilson@dmhca.edu',
+        role: 'counselor',
+        branch: 'delhi',
+        teamLeadId: '2',
+        isActive: true,
+        permissions: [
+          { resource: 'leads', actions: ['create', 'read', 'update'], scope: 'own' },
+          { resource: 'analytics', actions: ['read'], scope: 'own' },
+          { resource: 'sales', actions: ['read'], scope: 'own' },
+          { resource: 'communications', actions: ['create', 'read', 'update'], scope: 'own' },
+          { resource: 'settings', actions: ['read'], scope: 'own' },
+          { resource: 'hospitals', actions: ['read'], scope: 'all' },
+          { resource: 'courses', actions: ['read'], scope: 'all' },
+        ],
+        createdAt: new Date('2024-03-10'),
+        lastLogin: new Date(),
+        createdBy: '1',
+      }
+    ];
+    
+    const user = mockUsers.find(u => u.id === userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    
+    return user;
+  }
+
+  async getUsers(params?: { page?: number; limit?: number; search?: string; role?: string }): Promise<{ users: User[]; total: number; page: number; limit: number }> {
+    // Mock users data for development
+    const mockUsers: User[] = [
+      {
+        id: '1',
+        username: 'admin',
+        name: 'Admin Manager',
+        email: 'admin@dmhca.edu',
+        role: 'manager',
+        branch: 'delhi',
+        isActive: true,
+        permissions: [],
+        createdAt: new Date('2024-01-01'),
+        lastLogin: new Date(),
+        createdBy: '1',
+      },
+      {
+        id: '2',
+        username: 'john_lead',
+        name: 'John Smith',
+        email: 'john.smith@dmhca.edu',
+        role: 'team_lead',
+        branch: 'delhi',
+        isActive: true,
+        permissions: [],
+        teamMembers: ['3', '4'],
+        createdAt: new Date('2024-02-15'),
+        lastLogin: new Date(),
+        createdBy: '1',
+      },
+      {
+        id: '3',
+        username: 'sarah_counselor',
+        name: 'Sarah Wilson',
+        email: 'sarah.wilson@dmhca.edu',
+        role: 'counselor',
+        branch: 'delhi',
+        teamLeadId: '2',
+        isActive: true,
+        permissions: [],
+        createdAt: new Date('2024-03-10'),
+        lastLogin: new Date(),
+        createdBy: '1',
+      },
+      {
+        id: '4',
+        username: 'mike_counselor',
+        name: 'Mike Johnson',
+        email: 'mike.johnson@dmhca.edu',
+        role: 'counselor',
+        branch: 'hyderabad',
+        teamLeadId: '2',
+        isActive: true,
+        permissions: [],
+        createdAt: new Date('2024-03-20'),
+        lastLogin: new Date(),
+        createdBy: '1',
+      },
+    ];
+
+    // Apply filters
+    let filteredUsers = mockUsers;
+    
+    if (params?.role) {
+      filteredUsers = filteredUsers.filter(user => user.role === params.role);
+    }
+
+    if (params?.search) {
+      const search = params.search.toLowerCase();
+      filteredUsers = filteredUsers.filter(user =>
+        user.name.toLowerCase().includes(search) ||
+        user.email.toLowerCase().includes(search) ||
+        user.username.toLowerCase().includes(search)
+      );
+    }
+
+    // Pagination
+    const page = params?.page || 1;
+    const limit = params?.limit || 20;
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + limit;
+    const paginatedUsers = filteredUsers.slice(startIndex, endIndex);
+
+    return {
+      users: paginatedUsers,
+      total: filteredUsers.length,
+      page,
+      limit,
+    };
+  }
+
+  async createUser(userData: Partial<User>): Promise<User> {
+    const response = await fetch(`${API_BASE_URL}/users`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify(userData),
+    });
+    
+    return this.handleResponse<User>(response);
+  }
+
+  async updateUser(userId: string, userData: Partial<User>): Promise<User> {
+    // Mock update user
+    console.log(`Mock: Updating user ${userId}`, userData);
+    
+    // Simulate API delay
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // Return updated user data with mock user structure
+    const mockUser: User = {
+      id: userId,
+      username: userData.username || `user_${userId}`,
+      name: userData.name || 'Updated User',
+      email: userData.email || 'user@dmhca.edu',
+      role: userData.role || 'counselor',
+      branch: userData.branch || 'delhi',
+      isActive: userData.isActive ?? true,
+      avatar: userData.avatar || '/images/avatars/default.jpg',
+      permissions: userData.permissions || [
+        { resource: 'leads', actions: ['read', 'update'], scope: 'team' }
+      ],
+      lastLogin: new Date(),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      createdBy: 'system'
+    };
+    
+    return mockUser;
+  }
+
+  async deleteUser(userId: string): Promise<void> {
+    // Mock delete user
+    console.log(`Mock: Deleting user ${userId}`);
+    
+    // Simulate API delay
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // Always succeed in mock mode
+    return Promise.resolve();
+  }
+
+  // Lead APIs
+  async getLeads(params?: { 
+    page?: number; 
+    limit?: number; 
+    search?: string; 
+    status?: string; 
+    assignedTo?: string;
+    branch?: string;
+    source?: string;
+  }): Promise<{ leads: Lead[]; total: number; page: number; limit: number }> {
+    // Mock leads data for development
+    const mockLeads: Lead[] = [
+      {
+        id: '1',
+        leadId: 'DMHCA-2024-001',
+        name: 'Arjun Mehta',
+        email: 'arjun.mehta@email.com',
+        country: 'India',
+        phone: '+91-9876543240',
+        course: 'Medical Coding',
+        qualification: 'mbbs',
+        followUpDate: new Date('2025-08-08'),
+        status: 'hot',
+        notes: [],
+        assignedCounselor: '3',
+        branch: 'delhi',
+        source: 'website',
+        leadScore: 85,
+        createdAt: new Date('2025-08-01'),
+        updatedAt: new Date('2025-08-07'),
+      },
+      {
+        id: '2',
+        leadId: 'DMHCA-2024-002',
+        name: 'Pooja Desai',
+        email: 'pooja.desai@email.com',
+        country: 'India',
+        phone: '+91-9876543241',
+        course: 'Healthcare Management',
+        qualification: 'md',
+        followUpDate: new Date('2025-08-09'),
+        status: 'warm',
+        notes: [],
+        assignedCounselor: '3',
+        branch: 'delhi',
+        source: 'social_media',
+        leadScore: 72,
+        createdAt: new Date('2025-08-02'),
+        updatedAt: new Date('2025-08-07'),
+      },
+      {
+        id: '3',
+        leadId: 'DMHCA-2024-003',
+        name: 'Rahul Singh',
+        email: 'rahul.singh@email.com',
+        country: 'India',
+        phone: '+91-9876543242',
+        course: 'Clinical Research',
+        qualification: 'md/ms',
+        followUpDate: new Date('2025-08-10'),
+        status: 'followup',
+        notes: [],
+        assignedCounselor: '4',
+        branch: 'hyderabad',
+        source: 'referral',
+        leadScore: 91,
+        createdAt: new Date('2025-08-03'),
+        updatedAt: new Date('2025-08-06'),
+      },
+    ];
+
+    // Apply filters
+    let filteredLeads = mockLeads;
+    
+    if (params?.search) {
+      const search = params.search.toLowerCase();
+      filteredLeads = filteredLeads.filter(lead => 
+        lead.name.toLowerCase().includes(search) ||
+        lead.email.toLowerCase().includes(search) ||
+        lead.phone.includes(search) ||
+        lead.course.toLowerCase().includes(search)
+      );
+    }
+
+    if (params?.status) {
+      filteredLeads = filteredLeads.filter(lead => lead.status === params.status);
+    }
+
+    if (params?.assignedTo) {
+      filteredLeads = filteredLeads.filter(lead => lead.assignedCounselor === params.assignedTo);
+    }
+
+    if (params?.branch) {
+      filteredLeads = filteredLeads.filter(lead => lead.branch === params.branch);
+    }
+
+    // Pagination
+    const page = params?.page || 1;
+    const limit = params?.limit || 20;
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + limit;
+    const paginatedLeads = filteredLeads.slice(startIndex, endIndex);
+
+    return {
+      leads: paginatedLeads,
+      total: filteredLeads.length,
+      page,
+      limit,
+    };
+  }
+
+  async getLead(leadId: string): Promise<Lead> {
+    // Mock get lead by ID
+    console.log(`Mock: Getting lead ${leadId}`);
+    
+    // Simulate API delay
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
+    // Return mock lead data
+    const mockLead: Lead = {
+      id: leadId,
+      leadId: `LEAD-${leadId}`,
+      name: 'John Doe',
+      email: 'john.doe@email.com',
+      country: 'India',
+      phone: '+91-9876543210',
+      course: 'Dental Hygienist',
+      qualification: 'bds',
+      followUpDate: new Date('2024-01-25T10:00:00.000Z'),
+      status: 'warm',
+      assignedCounselor: '2',
+      branch: 'delhi',
+      source: 'website',
+      campaign: 'winter-campaign',
+      leadScore: 85,
+      createdAt: new Date('2024-01-15T10:30:00.000Z'),
+      updatedAt: new Date('2024-01-20T14:20:00.000Z'),
+      notes: [
+        {
+          id: '1',
+          content: 'Initial inquiry about dental hygienist program',
+          timestamp: new Date('2024-01-15T10:30:00.000Z'),
+          author: '2',
+          isSystem: false
+        }
+      ]
+    };
+    
+    return mockLead;
+  }
+
+  async createLead(leadData: Partial<Lead>): Promise<Lead> {
+    const response = await fetch(`${API_BASE_URL}/leads`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify(leadData),
+    });
+    
+    return this.handleResponse<Lead>(response);
+  }
+
+  async updateLead(leadId: string, leadData: Partial<Lead>): Promise<Lead> {
+    const response = await fetch(`${API_BASE_URL}/leads/${leadId}`, {
+      method: 'PUT',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify(leadData),
+    });
+    
+    return this.handleResponse<Lead>(response);
+  }
+
+  async deleteLead(leadId: string): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/leads/${leadId}`, {
+      method: 'DELETE',
+      headers: this.getAuthHeaders(),
+    });
+    
+    await this.handleResponse<void>(response);
+  }
+
+  async assignLead(leadId: string, assignedTo: string, reason?: string): Promise<Lead> {
+    const response = await fetch(`${API_BASE_URL}/leads/${leadId}/assign`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify({ assignedTo, reason }),
+    });
+    
+    return this.handleResponse<Lead>(response);
+  }
+
+  async addLeadNote(leadId: string, note: string, noteType: string = 'general'): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/leads/${leadId}/notes`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify({ note, noteType }),
+    });
+    
+    await this.handleResponse<void>(response);
+  }
+
+  // Follow-up APIs
+  async scheduleFollowUp(leadId: string, data: {
+    scheduledAt: string;
+    title: string;
+    description?: string;
+  }): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/leads/${leadId}/follow-ups`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify(data),
+    });
+    
+    await this.handleResponse<void>(response);
+  }
+
+  async getFollowUps(params?: { 
+    page?: number; 
+    limit?: number; 
+    status?: string;
+    date?: string;
+  }): Promise<any> {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.limit) searchParams.append('limit', params.limit.toString());
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.date) searchParams.append('date', params.date);
+    
+    const response = await fetch(`${API_BASE_URL}/follow-ups?${searchParams}`, {
+      headers: this.getAuthHeaders(),
+    });
+    
+    return this.handleResponse<any>(response);
+  }
+
+  async updateFollowUp(followUpId: string, data: { status: string; completedAt?: string }): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/follow-ups/${followUpId}`, {
+      method: 'PUT',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify(data),
+    });
+    
+    await this.handleResponse<void>(response);
+  }
+
+  // Branch APIs
+  async getBranches(): Promise<Branch[]> {
+    const response = await fetch(`${API_BASE_URL}/branches`, {
+      headers: this.getAuthHeaders(),
+    });
+    
+    return this.handleResponse<Branch[]>(response);
+  }
+
+  async createBranch(branchData: Partial<Branch>): Promise<Branch> {
+    const response = await fetch(`${API_BASE_URL}/branches`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify(branchData),
+    });
+    
+    return this.handleResponse<Branch>(response);
+  }
+
+  async updateBranch(branchId: string, branchData: Partial<Branch>): Promise<Branch> {
+    const response = await fetch(`${API_BASE_URL}/branches/${branchId}`, {
+      method: 'PUT',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify(branchData),
+    });
+    
+    return this.handleResponse<Branch>(response);
+  }
+
+  // Course APIs
+  async getCourses(): Promise<Course[]> {
+    const response = await fetch(`${API_BASE_URL}/courses`, {
+      headers: this.getAuthHeaders(),
+    });
+    
+    return this.handleResponse<Course[]>(response);
+  }
+
+  // Analytics APIs
+  async getDashboardStats(branchId?: string): Promise<DashboardStats> {
+    const params = new URLSearchParams();
+    if (branchId && branchId !== 'all') params.append('branch', branchId);
+    
+    const response = await fetch(`${API_BASE_URL}/analytics/dashboard?${params}`, {
+      headers: this.getAuthHeaders(),
+    });
+    
+    return this.handleResponse<DashboardStats>(response);
+  }
+
+  async getLeadAnalytics(params?: { 
+    startDate?: string; 
+    endDate?: string; 
+    branch?: string;
+  }): Promise<any> {
+    const searchParams = new URLSearchParams();
+    if (params?.startDate) searchParams.append('startDate', params.startDate);
+    if (params?.endDate) searchParams.append('endDate', params.endDate);
+    if (params?.branch) searchParams.append('branch', params.branch);
+    
+    const response = await fetch(`${API_BASE_URL}/analytics/leads?${searchParams}`, {
+      headers: this.getAuthHeaders(),
+    });
+    
+    return this.handleResponse<any>(response);
+  }
+
+  async getRevenueAnalytics(params?: { 
+    startDate?: string; 
+    endDate?: string; 
+    branch?: string;
+  }): Promise<any> {
+    const searchParams = new URLSearchParams();
+    if (params?.startDate) searchParams.append('startDate', params.startDate);
+    if (params?.endDate) searchParams.append('endDate', params.endDate);
+    if (params?.branch) searchParams.append('branch', params.branch);
+    
+    const response = await fetch(`${API_BASE_URL}/analytics/revenue?${searchParams}`, {
+      headers: this.getAuthHeaders(),
+    });
+    
+    return this.handleResponse<any>(response);
+  }
+
+  async exportAnalytics(type: 'leads' | 'revenue', format: 'csv' | 'json', params?: any): Promise<Blob> {
+    const searchParams = new URLSearchParams();
+    if (params) {
+      Object.keys(params).forEach(key => {
+        if (params[key]) searchParams.append(key, params[key]);
+      });
+    }
+    searchParams.append('format', format);
+    
+    const response = await fetch(`${API_BASE_URL}/analytics/${type}/export?${searchParams}`, {
+      headers: this.getAuthHeaders(),
+    });
+    
+    if (!response.ok) {
+      throw new Error('Export failed');
+    }
+    
+    return response.blob();
+  }
+
+  // WhatsApp APIs
+  async sendWhatsAppMessage(data: {
+    phoneNumber: string;
+    message: string;
+    templateType?: string;
+    leadId?: string;
+  }): Promise<{ whatsappUrl: string }> {
+    const response = await fetch(`${API_BASE_URL}/whatsapp/send`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify(data),
+    });
+    
+    return this.handleResponse<{ whatsappUrl: string }>(response);
+  }
+
+  async getWhatsAppTemplates(): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/whatsapp/templates`, {
+      headers: this.getAuthHeaders(),
+    });
+    
+    return this.handleResponse<any>(response);
+  }
+
+  async getWhatsAppMessages(leadId: string): Promise<any[]> {
+    const response = await fetch(`${API_BASE_URL}/whatsapp/messages/${leadId}`, {
+      headers: this.getAuthHeaders(),
+    });
+    
+    return this.handleResponse<any[]>(response);
+  }
+
+  // Notification APIs
+  async getNotifications(params?: { page?: number; limit?: number }): Promise<any> {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.limit) searchParams.append('limit', params.limit.toString());
+    
+    const response = await fetch(`${API_BASE_URL}/notifications?${searchParams}`, {
+      headers: this.getAuthHeaders(),
+    });
+    
+    return this.handleResponse<any>(response);
+  }
+
+  // Sales APIs
+  async getSales(params?: { 
+    page?: number; 
+    limit?: number; 
+    search?: string;
+    paymentStatus?: string[];
+    paymentType?: string[];
+    branch?: string[];
+    qualification?: string[];
+    counselor?: string[];
+    dateFrom?: string;
+    dateTo?: string;
+  }): Promise<{ data: any[]; pagination: any }> {
+    try {
+      const searchParams = new URLSearchParams();
+      if (params?.page) searchParams.append('page', params.page.toString());
+      if (params?.limit) searchParams.append('limit', params.limit.toString());
+      if (params?.search) searchParams.append('search', params.search);
+      if (params?.paymentStatus) params.paymentStatus.forEach(status => searchParams.append('paymentStatus', status));
+      if (params?.paymentType) params.paymentType.forEach(type => searchParams.append('paymentType', type));
+      if (params?.branch) params.branch.forEach(branch => searchParams.append('branch', branch));
+      if (params?.qualification) params.qualification.forEach(qual => searchParams.append('qualification', qual));
+      if (params?.counselor) params.counselor.forEach(counselor => searchParams.append('counselor', counselor));
+      if (params?.dateFrom) searchParams.append('dateFrom', params.dateFrom);
+      if (params?.dateTo) searchParams.append('dateTo', params.dateTo);
+      
+      return await this.makeRequest<{ data: any[]; pagination: any }>(
+        `${API_BASE_URL}/sales?${searchParams}`,
+        {
+          method: 'GET',
+        }
+      );
+    } catch (error) {
+      console.warn('Backend sales API not available, using mock data:', error);
+      
+      // Return mock sales data
+      const mockSales = this.generateMockSales();
+      const page = params?.page || 1;
+      const limit = params?.limit || 10;
+      const start = (page - 1) * limit;
+      const end = start + limit;
+      
+      let filteredSales = mockSales;
+      
+      // Apply search filter
+      if (params?.search) {
+        const search = params.search.toLowerCase();
+        filteredSales = filteredSales.filter((sale: any) => 
+          sale.studentName.toLowerCase().includes(search) ||
+          sale.studentEmail.toLowerCase().includes(search) ||
+          sale.course.toLowerCase().includes(search)
+        );
+      }
+      
+      // Apply other filters
+      if (params?.paymentStatus?.length) {
+        filteredSales = filteredSales.filter((sale: any) => 
+          params.paymentStatus!.includes(sale.paymentStatus)
+        );
+      }
+      
+      if (params?.branch?.length) {
+        filteredSales = filteredSales.filter((sale: any) => 
+          params.branch!.includes(sale.branch)
+        );
+      }
+      
+      const paginatedSales = filteredSales.slice(start, end);
+      
+      return {
+        data: paginatedSales,
+        pagination: {
+          page,
+          limit,
+          total: filteredSales.length,
+          totalPages: Math.ceil(filteredSales.length / limit),
+        }
+      };
+    }
+  }
+
+  async getSale(saleId: string): Promise<any> {
+    try {
+      return await this.makeRequest<any>(`${API_BASE_URL}/sales/${saleId}`, {
+        method: 'GET',
+      });
+    } catch (error) {
+      console.warn('Backend sales API not available, using mock data:', error);
+      
+      // Return mock sale data
+      const mockSales = this.generateMockSales();
+      const sale = mockSales.find(s => s.id === saleId);
+      
+      if (!sale) {
+        throw new ApiClientError('Sale not found', 404);
+      }
+      
+      return sale;
+    }
+  }
+
+  async createSale(saleData: {
+    leadId: string;
+    studentName: string;
+    studentEmail: string;
+    studentPhone: string;
+    course: string;
+    qualification: string;
+    branchId: number;
+    courseFee: number;
+    admissionDate: string;
+    paymentType: string;
+    paymentStatus?: string;
+    paidAmount?: number;
+    paymentDate?: string;
+    transactionId?: string;
+    loanProvider?: string;
+    emiTotalCount?: number;
+    emiAmount?: number;
+  }): Promise<any> {
+    try {
+      return await this.makeRequest<any>(`${API_BASE_URL}/sales`, {
+        method: 'POST',
+        body: JSON.stringify(saleData),
+      });
+    } catch (error) {
+      console.warn('Backend sales API not available, creating mock sale:', error);
+      
+      // Create mock sale
+      const newSale = {
+        id: `sale-${Date.now()}`,
+        ...saleData,
+        branch: saleData.branchId === 1 ? 'delhi' : saleData.branchId === 2 ? 'hyderabad' : 'kashmir',
+        counselorId: '1',
+        counselorName: 'Mock Counselor',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      
+      return newSale;
+    }
+  }
+
+  async updateSale(saleId: string, saleData: Partial<{
+    studentName: string;
+    studentEmail: string;
+    studentPhone: string;
+    course: string;
+    qualification: string;
+    courseFee: number;
+    admissionDate: string;
+    paymentType: string;
+    paymentStatus: string;
+    paidAmount: number;
+    paymentDate: string;
+    transactionId: string;
+    loanProvider: string;
+    emiTotalCount: number;
+    emiCompletedCount: number;
+    emiAmount: number;
+    nextEmiDate: string;
+  }>): Promise<any> {
+    try {
+      return await this.makeRequest<any>(`${API_BASE_URL}/sales/${saleId}`, {
+        method: 'PUT',
+        body: JSON.stringify(saleData),
+      });
+    } catch (error) {
+      console.warn('Backend sales API not available, updating mock sale:', error);
+      
+      // Return updated mock sale
+      return {
+        id: saleId,
+        ...saleData,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+  }
+
+  async deleteSale(saleId: string): Promise<void> {
+    try {
+      await this.makeRequest<void>(`${API_BASE_URL}/sales/${saleId}`, {
+        method: 'DELETE',
+      });
+    } catch (error) {
+      console.warn('Backend sales API not available, mock delete successful:', error);
+      // Mock delete - just return success
+    }
+  }
+
+  // Mock data generator for sales
+  private generateMockSales(): any[] {
+    const courses = ['BSc Nursing', 'GNM', 'ANM', 'MSc Nursing', 'Post Basic BSc Nursing'];
+    const branches = ['delhi', 'hyderabad', 'kashmir'];
+    const paymentTypes = ['full_payment', 'installment', 'loan'];
+    const paymentStatuses = ['paid', 'pending', 'overdue', 'partial'];
+    const qualifications = ['12th Science', 'Bachelor Degree', 'Diploma', 'Master Degree'];
+    
+    const counselors = [
+      { id: '1', name: 'Admin Manager' },
+      { id: '2', name: 'John Smith' },
+      { id: '3', name: 'Sarah Wilson' },
+      { id: '4', name: 'Mike Johnson' },
+    ];
+
+    const mockSales = [];
+    for (let i = 1; i <= 50; i++) {
+      const course = courses[Math.floor(Math.random() * courses.length)];
+      const branch = branches[Math.floor(Math.random() * branches.length)];
+      const paymentType = paymentTypes[Math.floor(Math.random() * paymentTypes.length)];
+      const paymentStatus = paymentStatuses[Math.floor(Math.random() * paymentStatuses.length)];
+      const qualification = qualifications[Math.floor(Math.random() * qualifications.length)];
+      const counselor = counselors[Math.floor(Math.random() * counselors.length)];
+      
+      const courseFee = Math.floor(Math.random() * 500000) + 100000; // 1L to 6L
+      const paidAmount = paymentStatus === 'paid' ? courseFee : Math.floor(Math.random() * courseFee);
+      
+      mockSales.push({
+        id: i.toString(),
+        leadId: `lead-${i}`,
+        studentName: `Student ${i}`,
+        studentEmail: `student${i}@example.com`,
+        studentPhone: `+91${Math.floor(Math.random() * 9000000000) + 1000000000}`,
+        course,
+        qualification,
+        branch,
+        branchId: branch === 'delhi' ? 1 : branch === 'hyderabad' ? 2 : 3,
+        courseFee,
+        admissionDate: new Date(2024, Math.floor(Math.random() * 12), Math.floor(Math.random() * 28) + 1).toISOString().split('T')[0],
+        paymentType,
+        paymentStatus,
+        paidAmount,
+        paymentDate: paymentStatus === 'paid' ? new Date().toISOString().split('T')[0] : null,
+        transactionId: paymentStatus === 'paid' ? `TXN${Math.random().toString(36).substr(2, 9).toUpperCase()}` : null,
+        counselorId: counselor.id,
+        counselorName: counselor.name,
+        createdAt: new Date(2024, Math.floor(Math.random() * 8), Math.floor(Math.random() * 28) + 1).toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    
+    return mockSales;
+  }
+
+  async markNotificationAsRead(notificationId: string): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/notifications/${notificationId}/read`, {
+      method: 'PUT',
+      headers: this.getAuthHeaders(),
+    });
+    
+    await this.handleResponse<void>(response);
+  }
+}
+
+// Create singleton instance
+export const apiClient = new ApiClient();
+
+// Export commonly used methods for convenience
+export const {
+  login,
+  logout,
+  getCurrentUser,
+  getLeads,
+  createLead,
+  updateLead,
+  deleteLead,
+  getUsers,
+  createUser,
+  updateUser,
+  deleteUser,
+  getDashboardStats,
+  getBranches,
+  getCourses,
+  getSales,
+  getSale,
+  createSale,
+  updateSale,
+  deleteSale,
+} = apiClient;

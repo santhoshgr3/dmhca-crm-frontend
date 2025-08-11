@@ -1,0 +1,124 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { 
+  monitorConnection, 
+  checkApiHealth, 
+  isDemoMode,
+  showSuccessNotification,
+  showErrorNotification,
+  ApiClientError
+} from '@/lib/api/utils';
+
+interface ConnectionStatusProps {
+  children: React.ReactNode;
+}
+
+export default function ConnectionMonitor({ children }: ConnectionStatusProps) {
+  const [isOnline, setIsOnline] = useState(true);
+  const [apiHealthy, setApiHealthy] = useState(false);
+  const [demoMode, setDemoMode] = useState(true);
+  const [lastHealthCheck, setLastHealthCheck] = useState<Date | null>(null);
+
+  useEffect(() => {
+    // Initialize connection monitoring
+    const cleanup = monitorConnection();
+
+    // Check demo mode
+    setDemoMode(isDemoMode());
+
+    // Initial API health check
+    const checkHealth = async () => {
+      try {
+        const healthy = await checkApiHealth();
+        setApiHealthy(healthy);
+        setLastHealthCheck(new Date());
+        
+        if (healthy && demoMode) {
+          showSuccessNotification('Backend connection established');
+          setDemoMode(false);
+        }
+      } catch (error) {
+        setApiHealthy(false);
+        console.warn('API health check failed:', error);
+      }
+    };
+
+    checkHealth();
+
+    // Set up periodic health checks (every 5 minutes)
+    const healthCheckInterval = setInterval(checkHealth, 5 * 60 * 1000);
+
+    // Monitor browser online/offline status
+    const handleOnline = () => {
+      setIsOnline(true);
+      // Re-check API health when coming back online
+      checkHealth();
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Initial online status
+    setIsOnline(navigator.onLine);
+
+    return () => {
+      cleanup();
+      clearInterval(healthCheckInterval);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [demoMode]);
+
+  return (
+    <div className="relative">
+      {/* Connection Status Banner */}
+      {(!isOnline || (demoMode && !apiHealthy)) && (
+        <div className={`
+          fixed top-0 left-0 right-0 z-50 px-4 py-2 text-sm text-center
+          ${!isOnline 
+            ? 'bg-red-600 text-white' 
+            : 'bg-blue-600 text-white'
+          }
+        `}>
+          {!isOnline ? (
+            <span className="flex items-center justify-center gap-2">
+              <svg className="w-4 h-4 animate-pulse" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M13.477 14.89A6 6 0 015.11 6.524l8.367 8.368zm1.414-1.414L6.524 5.11a6 6 0 018.367 8.367zM18 10a8 8 0 11-16 0 8 8 0 0116 0z" clipRule="evenodd" />
+              </svg>
+              No internet connection - Working offline with cached data
+            </span>
+          ) : (
+            <span className="flex items-center justify-center gap-2">
+              <svg className="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+              </svg>
+              Demo Mode - Backend API not connected, using sample data
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Main Content */}
+      <div className={(!isOnline || (demoMode && !apiHealthy)) ? 'pt-10' : ''}>
+        {children}
+      </div>
+
+      {/* Debug Info (Development only) */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="fixed bottom-4 right-4 bg-gray-800 text-white p-3 rounded-lg text-xs opacity-75 hover:opacity-100 transition-opacity">
+          <div>Online: {isOnline ? '✅' : '❌'}</div>
+          <div>API: {apiHealthy ? '✅' : '❌'}</div>
+          <div>Mode: {demoMode ? 'Demo' : 'Live'}</div>
+          {lastHealthCheck && (
+            <div>Last Check: {lastHealthCheck.toLocaleTimeString()}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,356 @@
+'use client';
+
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { User, UserRole, Permission } from '@/types';
+import { apiClient } from '@/lib/api/client';
+
+interface AuthContextType {
+  user: User | null;
+  loading: boolean;
+  login: (email: string, password: string) => Promise<boolean>;
+  logout: () => void;
+  hasPermission: (resource: string, action: string, scope?: string) => boolean;
+  canAccessResource: (resource: string) => boolean;
+  isManager: () => boolean;
+  isTeamLead: () => boolean;
+  isCounselor: () => boolean;
+  getAccessibleLeads: (allLeads: any[]) => any[];
+  refreshUser: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+// Default permissions for each role
+const getDefaultPermissions = (role: UserRole): Permission[] => {
+  switch (role) {
+    case 'manager':
+      return [
+        { resource: 'leads', actions: ['create', 'read', 'update', 'delete', 'manage'], scope: 'all' },
+        { resource: 'analytics', actions: ['read'], scope: 'all' },
+        { resource: 'sales', actions: ['read', 'manage'], scope: 'all' },
+        { resource: 'communications', actions: ['create', 'read', 'update', 'delete'], scope: 'all' },
+        { resource: 'users', actions: ['create', 'read', 'update', 'delete', 'manage'], scope: 'all' },
+        { resource: 'settings', actions: ['read', 'update', 'manage'], scope: 'all' },
+        { resource: 'hospitals', actions: ['read', 'update'], scope: 'all' },
+        { resource: 'courses', actions: ['read', 'update'], scope: 'all' },
+      ];
+    
+    case 'team_lead':
+      return [
+        { resource: 'leads', actions: ['create', 'read', 'update', 'delete'], scope: 'team' },
+        { resource: 'analytics', actions: ['read'], scope: 'team' },
+        { resource: 'sales', actions: ['read'], scope: 'team' },
+        { resource: 'communications', actions: ['create', 'read', 'update'], scope: 'team' },
+        { resource: 'users', actions: ['read'], scope: 'team' },
+        { resource: 'settings', actions: ['read'], scope: 'own' },
+        { resource: 'hospitals', actions: ['read'], scope: 'all' },
+        { resource: 'courses', actions: ['read'], scope: 'all' },
+      ];
+    
+    case 'counselor':
+      return [
+        { resource: 'leads', actions: ['create', 'read', 'update'], scope: 'own' },
+        { resource: 'analytics', actions: ['read'], scope: 'own' },
+        { resource: 'sales', actions: ['read'], scope: 'own' },
+        { resource: 'communications', actions: ['create', 'read', 'update'], scope: 'own' },
+        { resource: 'settings', actions: ['read'], scope: 'own' },
+        { resource: 'hospitals', actions: ['read'], scope: 'all' },
+        { resource: 'courses', actions: ['read'], scope: 'all' },
+      ];
+    
+    default:
+      return [];
+  }
+};
+
+// Mock users for authentication
+const mockUsers: User[] = [
+  {
+    id: '1',
+    username: 'admin',
+    name: 'Admin Manager',
+    email: 'admin@dmhca.edu',
+    role: 'manager',
+    branch: 'delhi', // Head office
+    isActive: true,
+    permissions: getDefaultPermissions('manager'),
+    createdAt: new Date('2024-01-01'),
+    lastLogin: new Date('2024-08-04T09:00:00'),
+    createdBy: '1',
+  },
+  {
+    id: '2',
+    username: 'john_lead',
+    name: 'John Smith',
+    email: 'john.smith@dmhca.edu',
+    role: 'team_lead',
+    branch: 'delhi',
+    isActive: true,
+    permissions: getDefaultPermissions('team_lead'),
+    teamMembers: ['3', '4'],
+    createdAt: new Date('2024-02-15'),
+    lastLogin: new Date('2024-08-04T08:30:00'),
+    createdBy: '1',
+  },
+  {
+    id: '3',
+    username: 'sarah_counselor',
+    name: 'Sarah Wilson',
+    email: 'sarah.wilson@dmhca.edu',
+    role: 'counselor',
+    branch: 'delhi',
+    teamLeadId: '2',
+    isActive: true,
+    permissions: getDefaultPermissions('counselor'),
+    createdAt: new Date('2024-03-10'),
+    lastLogin: new Date('2024-08-04T08:45:00'),
+    createdBy: '1',
+  },
+  {
+    id: '4',
+    username: 'mike_counselor',
+    name: 'Mike Johnson',
+    email: 'mike.johnson@dmhca.edu',
+    role: 'counselor',
+    branch: 'hyderabad',
+    teamLeadId: '2',
+    isActive: true,
+    permissions: getDefaultPermissions('counselor'),
+    createdAt: new Date('2024-03-20'),
+    lastLogin: new Date('2024-08-03T17:20:00'),
+    createdBy: '1',
+  },
+  // Additional users for other branches
+  {
+    id: '5',
+    username: 'kashmir_lead',
+    name: 'Arjun Singh',
+    email: 'arjun.singh@dmhca.edu',
+    role: 'team_lead',
+    branch: 'kashmir',
+    isActive: true,
+    permissions: getDefaultPermissions('team_lead'),
+    teamMembers: ['6'],
+    createdAt: new Date('2024-04-01'),
+    lastLogin: new Date('2024-08-04T07:30:00'),
+    createdBy: '1',
+  },
+  {
+    id: '6',
+    username: 'kashmir_counselor',
+    name: 'Priya Sharma',
+    email: 'priya.sharma@dmhca.edu',
+    role: 'counselor',
+    branch: 'kashmir',
+    teamLeadId: '5',
+    isActive: true,
+    permissions: getDefaultPermissions('counselor'),
+    createdAt: new Date('2024-04-15'),
+    lastLogin: new Date('2024-08-04T07:45:00'),
+    createdBy: '1',
+  },
+  {
+    id: '7',
+    username: 'hyderabad_lead',
+    name: 'Rajesh Kumar',
+    email: 'rajesh.kumar@dmhca.edu',
+    role: 'team_lead',
+    branch: 'hyderabad',
+    isActive: true,
+    permissions: getDefaultPermissions('team_lead'),
+    teamMembers: ['4', '8'],
+    createdAt: new Date('2024-04-01'),
+    lastLogin: new Date('2024-08-04T08:00:00'),
+    createdBy: '1',
+  },
+  {
+    id: '8',
+    username: 'hyderabad_counselor',
+    name: 'Ananya Reddy',
+    email: 'ananya.reddy@dmhca.edu',
+    role: 'counselor',
+    branch: 'hyderabad',
+    teamLeadId: '7',
+    isActive: true,
+    permissions: getDefaultPermissions('counselor'),
+    createdAt: new Date('2024-04-20'),
+    lastLogin: new Date('2024-08-04T08:15:00'),
+    createdBy: '1',
+  },
+];
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  useEffect(() => {
+    // Check for stored auth on mount and try to get current user
+    const initializeAuth = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (token) {
+          // Try to get current user with stored token
+          const currentUser = await apiClient.getCurrentUser();
+          setUser(currentUser);
+        }
+      } catch (error) {
+        console.error('Failed to initialize auth:', error);
+        // Clear invalid token
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+      } finally {
+        setLoading(false);
+        setIsHydrated(true);
+      }
+    };
+
+    initializeAuth();
+  }, []);
+
+  const login = async (email: string, password: string): Promise<boolean> => {
+    try {
+      setLoading(true);
+      const response = await apiClient.login(email, password);
+      setUser(response.user);
+      return true;
+    } catch (error) {
+      console.error('Login failed:', error);
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await apiClient.logout();
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      setUser(null);
+    }
+  };
+
+  const refreshUser = async () => {
+    try {
+      const currentUser = await apiClient.getCurrentUser();
+      setUser(currentUser);
+    } catch (error) {
+      console.error('Failed to refresh user:', error);
+      setUser(null);
+    }
+  };
+
+  const hasPermission = (resource: string, action: string, scope?: string): boolean => {
+    if (!user) return false;
+    
+    const permission = user.permissions.find(p => p.resource === resource);
+    if (!permission) return false;
+    
+    const hasAction = permission.actions.includes(action as any) || permission.actions.includes('manage');
+    if (!hasAction) return false;
+    
+    if (scope && permission.scope !== 'all' && permission.scope !== scope) {
+      return false;
+    }
+    
+    return true;
+  };
+
+  const canAccessResource = (resource: string): boolean => {
+    if (!user) return false;
+    return user.permissions.some(p => p.resource === resource);
+  };
+
+  const isManager = (): boolean => user?.role === 'manager';
+  const isTeamLead = (): boolean => user?.role === 'team_lead';
+  const isCounselor = (): boolean => user?.role === 'counselor';
+
+  const getAccessibleLeads = (allLeads: any[]): any[] => {
+    if (!user) return [];
+    
+    if (user.role === 'manager') {
+      return allLeads; // Managers see all leads from all branches
+    } else if (user.role === 'team_lead') {
+      // Team leads see their team's leads within their branch
+      return allLeads.filter(lead => 
+        lead.branch === user.branch && (
+          lead.assignedCounselor === user.id || 
+          (user.teamMembers && user.teamMembers.includes(lead.assignedCounselor))
+        )
+      );
+    } else if (user.role === 'counselor') {
+      // Counselors see only their leads within their branch
+      return allLeads.filter(lead => 
+        lead.branch === user.branch && lead.assignedCounselor === user.id
+      );
+    }
+    
+    return [];
+  };
+
+  const value = {
+    user,
+    loading,
+    login,
+    logout,
+    hasPermission,
+    canAccessResource,
+    isManager,
+    isTeamLead,
+    isCounselor,
+    getAccessibleLeads,
+    refreshUser,
+  };
+
+  // Prevent hydration mismatch by not rendering until hydrated
+  if (!isHydrated || loading) {
+    return (
+      <AuthContext.Provider value={value}>
+        <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        </div>
+      </AuthContext.Provider>
+    );
+  }
+
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+}
+
+// Higher-order component for role-based access
+export function withRoleAccess(Component: React.ComponentType, allowedRoles: UserRole[]) {
+  return function ProtectedComponent(props: any) {
+    const { user } = useAuth();
+    
+    if (!user || !allowedRoles.includes(user.role)) {
+      return (
+        <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+          <div className="text-center">
+            <div className="text-6xl mb-4">🔒</div>
+            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+              Access Denied
+            </h3>
+            <p className="text-gray-500 dark:text-gray-400">
+              You don't have permission to access this resource.
+            </p>
+          </div>
+        </div>
+      );
+    }
+    
+    return <Component {...props} />;
+  };
+}
